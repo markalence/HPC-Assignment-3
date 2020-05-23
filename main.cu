@@ -49,7 +49,7 @@ tuple<float *, char *, uint, uint> loadImage(const char *fname, const char *exe)
     printf("\n\n");
     float *image = nullptr;
     unsigned int width, height;
-    char *imagepath = sdkFindFileimagepath(fname, exe);
+    char *imagepath = sdkFindFilePath(fname, exe);
     sdkLoadPGM(imagepath, &image, &width, &height);
     printf("'%s', %d x %d pixels\n", fname, width, height);
     return make_tuple(image, imagepath, height, width);
