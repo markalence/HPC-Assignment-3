@@ -61,7 +61,7 @@ void getFilter(float *filter, char choice) {
             getAvg(filter);
             break;
         case 's':
-            getSharpen(filter);
+            getEdgeDet(filter);
             break;
     }
 
