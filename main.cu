@@ -9,13 +9,14 @@
 
 using namespace std;
 
-const uint MAX_FILTER_SIZE = 49;
+const uint MAX_SIZE = 49;
 const char *fname;
 int* dwd;
 int* dht;
 int ht;
 int wd;
-__constant__ float ConstFilter[MAX_FILTER_SIZE];
+FILE * OUT = fopen("results.txt","w");
+__constant__ float constfilter[MAX_SIZE];
 texture<float, 2, cudaReadModeElementType> tex;
 
 
@@ -45,23 +46,25 @@ void getSharpen(float *filter) {
     filter[ht / 2 * wd / 2] = (float) (ht * wd);
 }
 
-tuple<float *, char *, uint, uint> loadImage(const char *fname, const char *exe) {
-    printf("\n\n");
+tuple<float *, char *, uint, uint> getPicture(const char *fname, const char *exe) {
     float *image = nullptr;
     unsigned int width, height;
     char *imagepath = sdkFindFilePath(fname, exe);
     sdkLoadPGM(imagepath, &image, &width, &height);
-    printf("'%s', %d x %d pixels\n", fname, width, height);
+    fprintf(OUT,"Image size is %d x %d pixels\n", width, height);
     return make_tuple(image, imagepath, height, width);
 }
 
 void getFilter(float *filter, char choice) {
     switch (choice) {
-        case 'b':
+        case 'a':
             getAvg(filter);
             break;
-        case 's':
+        case 'e':
             getEdgeDet(filter);
+            break;
+        case 's':
+            getSharpen(filter);
             break;
     }
 
@@ -73,16 +76,16 @@ __global__ void convolutionTextureGPU(float *output, float *filter, int width, i
     uint idxY = threadIdx.y + blockIdx.y * blockDim.y;
     float val, fval;
     float sum = 0.0;
-    int imRow, imCol;
+    int imrow, imcol;
 
     for (int r = -dht[0] / 2; r <= dht[0] / 2; r++) {
         for (int c = -dwd[0] / 2; c <= dwd[0] / 2; c++) {
-            imRow = idxX - r;
-            imCol = idxY - c;
-            if (imRow < 0 || imCol < 0 || imRow > height - 1 || imCol > width - 1) {
+            imrow = idxX - r;
+            imcol = idxY - c;
+            if (imrow < 0 || imcol < 0 || imrow > height - 1 || imcol > width - 1) {
                 val = 0.0;
             } else {
-                val = tex2D(tex, imCol + 0.5f, imRow + 0.5f);
+                val = tex2D(tex, imcol + 0.5f, imrow + 0.5f);
             }
             fval = filter[(c + dwd[0] / 2) + (r + dht[0] / 2) * dwd[0]];
             sum += val * fval;
@@ -125,18 +128,18 @@ __global__ void convolutionConstantGPU(const float *image, float *output, uint h
     uint idx = threadIdx.x + blockIdx.x * blockDim.x;
     float val, fval;
     float sum = 0.0;
-    int imRow, imCol;
+    int imrow, imcol;
     if (idx < height * width * sizeof(float)) {
         for (int r = -dht[0] / 2; r <= dht[0] / 2; r++) {
             for (int c = -dwd[0] / 2; c <= dwd[0] / 2; c++) {
-                imRow = blockIdx.x - r;
-                imCol = threadIdx.x - c;
-                if (imRow < 0 || imCol < 0 || imRow > height - 1 || imCol > width - 1) {
+                imrow = blockIdx.x - r;
+                imcol = threadIdx.x - c;
+                if (imrow < 0 || imcol < 0 || imrow > height - 1 || imcol > width - 1) {
                     val = 0.0;
                 } else {
-                    val = image[imCol + imRow * width];
+                    val = image[imcol + imrow * width];
                 }
-                fval = ConstFilter[(c + dwd[0] / 2) + (r + dht[0] / 2) * dwd[0]];
+                fval = constfilter[(c + dwd[0] / 2) + (r + dht[0] / 2) * dwd[0]];
                 sum += val * fval;
             }
         }
@@ -151,16 +154,16 @@ convolutionNaiveGPU(float *image, float *output, float *filter, uint height, uin
     uint idx = threadIdx.x + blockIdx.x * blockDim.x;
     float val, fval;
     float sum = 0.0;
-    int imRow, imCol;
+    int imrow, imcol;
     if (idx < height * width * sizeof(float)) {
         for (int r = -dht[0] / 2; r <= dht[0] / 2; r++) {
             for (int c = -dwd[0] / 2; c <= dwd[0] / 2; c++) {
-                imRow = blockIdx.x - r;
-                imCol = threadIdx.x - c;
-                if (imRow < 0 || imCol < 0 || imRow > height - 1 || imCol > width - 1) {
+                imrow = blockIdx.x - r;
+                imcol = threadIdx.x - c;
+                if (imrow < 0 || imcol < 0 || imrow > height - 1 || imcol > width - 1) {
                     val = 0.0;
                 } else {
-                    val = image[imCol + imRow * width];
+                    val = image[imcol + imrow * width];
                 }
                 fval = filter[(c + dwd[0] / 2) + (r + dht[0] / 2) * dwd[0]];
                 sum += val * fval;
@@ -175,13 +178,13 @@ convolutionNaiveGPU(float *image, float *output, float *filter, uint height, uin
 __global__ void
 convolutionSharedGPU(const float *image, float *output, const float *filter, uint height, uint width, int* dht, int* dwd) {
 
-    __shared__ float sharedFilter[MAX_FILTER_SIZE];
+    __shared__ float sharedFilter[MAX_SIZE];
     uint idx = threadIdx.x + blockIdx.x * blockDim.x;
     float val, fval;
     float sum = 0.0;
-    int imRow, imCol;
+    int imrow, imcol;
     uint tid = threadIdx.x;
-//    printf("%d %d\n",dwd[0],dht[0]);
+//    fprintf(OUT,"%d %d\n",dwd[0],dht[0]);
     if (tid < dwd[0]*dht[0]) {
         sharedFilter[threadIdx.x] = filter[threadIdx.x];
     }
@@ -189,12 +192,12 @@ convolutionSharedGPU(const float *image, float *output, const float *filter, uin
     if (idx < height * width * sizeof(float)) {
         for (int r = -dht[0] / 2; r <= dht[0] / 2; r++) {
             for (int c = -dwd[0] / 2; c <= dwd[0] / 2; c++) {
-                imRow = blockIdx.x - r;
-                imCol = threadIdx.x - c;
-                if (imRow < 0 || imCol < 0 || imRow > height - 1 || imCol > width - 1) {
+                imrow = blockIdx.x - r;
+                imcol = threadIdx.x - c;
+                if (imrow < 0 || imcol < 0 || imrow > height - 1 || imcol > width - 1) {
                     val = 0.0;
                 } else {
-                    val = image[imCol + imRow * width];
+                    val = image[imcol + imrow * width];
                 }
                 fval = sharedFilter[(c + dwd[0] / 2) + (r + dht[0] / 2) * dwd[0]];
 
@@ -208,7 +211,7 @@ convolutionSharedGPU(const float *image, float *output, const float *filter, uin
     }
 }
 
-void SharedGPU(const char *exe, float *filter) {
+void shared_gpu(const char *exe, float *filter) {
 
     cudaDeviceSynchronize();
     StopWatchInterface *Otimer = nullptr;
@@ -217,50 +220,51 @@ void SharedGPU(const char *exe, float *filter) {
     float *image = nullptr;
     char *imagepath = nullptr;
     unsigned int width, height;
-    tie(image, imagepath, height, width) = loadImage(fname, exe);
+    tie(image, imagepath, height, width) = getPicture(fname, exe);
     float output[width * height];
     unsigned int size = width * height * sizeof(float);
     unsigned int filtersize = wd * ht * sizeof(float);
 
-    float *dFilter = nullptr;
+    float *d_filter = nullptr;
     float *dImage = nullptr;
-    float *dResult = nullptr;
+    float *d_result = nullptr;
     cudaMalloc((void **) &dImage, size);
-    cudaMalloc((void **) &dResult, size);
-    cudaMalloc((void **) &dFilter, filtersize);
+    cudaMalloc((void **) &d_result, size);
+    cudaMalloc((void **) &d_filter, filtersize);
     cudaMemcpy(dImage, image, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dFilter, filter, filtersize, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_filter, filter, filtersize, cudaMemcpyHostToDevice);
     cudaDeviceSynchronize();
     StopWatchInterface *timer = nullptr;
     sdkCreateTimer(&timer);
     sdkStartTimer(&timer);
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    convolutionSharedGPU<<<height, width>>>(dImage, dResult, dFilter, height, width, dht, dwd);
+    convolutionSharedGPU<<<height, width>>>(dImage, d_result, d_filter, height, width, dht, dwd);
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
     float KernelTime = sdkGetTimerValue(&timer);
-    printf("Processing time for Shared: %f (ms)\n", sdkGetTimerValue(&timer));
-    printf("%.2f GLOPS\n",
+    fprintf(OUT,"Processing time for Shared: %f (ms)\n", sdkGetTimerValue(&timer));
+    fprintf(OUT,"%.2f GLOPS\n",
            (width * height * ht * wd * 2) / (sdkGetTimerValue(&timer) / 1000.0f) / 1e9);
     sdkDeleteTimer(&timer);
     cudaDeviceSynchronize();
-    cudaMemcpy(output, dResult, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(output, d_result, size, cudaMemcpyDeviceToHost);
     char outputFilename[1024];
     strcpy(outputFilename, imagepath);
-    strcpy(outputFilename + strlen(imagepath) - 4, "_shared_out.pgm");
+    strcpy(outputFilename + strlen(imagepath) - 4, "_shared.pgm");
     sdkSavePGM(outputFilename, output, width, height);
-    printf("Wrote '%s'\n", outputFilename);
+    fprintf(OUT,"Results for shared memory \n");
     cudaFree(dImage);
-    cudaFree(dFilter);
-    cudaFree(dResult);
+    cudaFree(d_filter);
+    cudaFree(d_result);
     cudaDeviceSynchronize();
     sdkStopTimer(&Otimer);
-    printf("Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
+    fprintf(OUT,"Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
+    fprintf(OUT,"\n");
     sdkDeleteTimer(&Otimer);
 }
 
-void ConstantGPU(const char *exe, float *filter) {
+void const_gpu(const char *exe, float *filter) {
     cudaDeviceSynchronize();
     StopWatchInterface *Otimer = nullptr;
     sdkCreateTimer(&Otimer);
@@ -268,48 +272,50 @@ void ConstantGPU(const char *exe, float *filter) {
     float *image = nullptr;
     char *imagepath = nullptr;
     unsigned int width, height;
-    tie(image, imagepath, height, width) = loadImage(fname, exe);
+    tie(image, imagepath, height, width) = getPicture(fname, exe);
     float output[width * height];
     unsigned int size = width * height * sizeof(float);
     unsigned int filtersize = (wd * ht) * sizeof(float);
-    float *dFilter = nullptr;
+    float *d_filter = nullptr;
     float *dImage = nullptr;
-    float *dResult = nullptr;
+    float *d_result = nullptr;
     cudaMalloc((void **) &dImage, size);
-    cudaMalloc((void **) &dResult, size);
-    cudaMalloc((void **) &dFilter, filtersize);
+    cudaMalloc((void **) &d_result, size);
+    cudaMalloc((void **) &d_filter, filtersize);
     cudaMemcpy(dImage, image, size, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(ConstFilter, filter, filtersize);
+    cudaMemcpyToSymbol(constfilter, filter, filtersize);
     cudaDeviceSynchronize();
     StopWatchInterface *timer = nullptr;
     sdkCreateTimer(&timer);
     sdkStartTimer(&timer);
-    convolutionConstantGPU<<<height, width>>>(dImage, dResult, height, width, dht,dwd);
+    convolutionConstantGPU<<<height, width>>>(dImage, d_result, height, width, dht,dwd);
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
     float KernelTime = sdkGetTimerValue(&timer);
-    printf("Processing time for Constant: %f (ms)\n", sdkGetTimerValue(&timer));
-    printf("%.2f GLOPS\n",
+    fprintf(OUT,"Processing time for Constant: %f (ms)\n", sdkGetTimerValue(&timer));
+    fprintf(OUT,"%.2f GLOPS\n",
            (width * height * ht * wd * 2) / (sdkGetTimerValue(&timer) / 1000.0f) / 1e9);
     sdkDeleteTimer(&timer);
     cudaDeviceSynchronize();
-    cudaMemcpy(output, dResult, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(output, d_result, size, cudaMemcpyDeviceToHost);
     char outputFilenameNaive[1024];
     strcpy(outputFilenameNaive, imagepath);
-    strcpy(outputFilenameNaive + strlen(imagepath) - 4, "_constant_out.pgm");
+    strcpy(outputFilenameNaive + strlen(imagepath) - 4, "_constant.pgm");
     sdkSavePGM(outputFilenameNaive, output, width, height);
-    printf("Wrote '%s'\n", outputFilenameNaive);
+    fprintf(OUT,"Results for constant memory \n");
     cudaFree(dImage);
-    cudaFree(dFilter);
-    cudaFree(dResult);
+    cudaFree(d_filter);
+    cudaFree(d_result);
     cudaDeviceSynchronize();
     sdkStopTimer(&Otimer);
-    printf("Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
+    fprintf(OUT,"Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
     sdkDeleteTimer(&Otimer);
+    fprintf(OUT,"\n");
+
 
 }
 
-void TextureGPU(const char *exe, float *filter) {
+void tex_gpu(const char *exe, float *filter) {
     cudaDeviceSynchronize();
     StopWatchInterface *Otimer = nullptr;
     sdkCreateTimer(&Otimer);
@@ -317,20 +323,20 @@ void TextureGPU(const char *exe, float *filter) {
     float *image = nullptr;
     char *imagepath = nullptr;
     unsigned int width, height;
-    tie(image, imagepath, height, width) = loadImage(fname, exe);
+    tie(image, imagepath, height, width) = getPicture(fname, exe);
     float output[width * height];
     unsigned int size = width * height * sizeof(float);
     unsigned int filtersize = wd * ht * sizeof(float);
     cudaArray *dImage = nullptr;
-    float *dFilter = nullptr;
-    float *dResult = nullptr;
-    cudaMalloc((void **) &dResult, size);
-    cudaMalloc((void **) &dFilter, filtersize);
+    float *d_filter = nullptr;
+    float *d_result = nullptr;
+    cudaMalloc((void **) &d_result, size);
+    cudaMalloc((void **) &d_filter, filtersize);
     cudaChannelFormatDesc channelDesc =
             cudaCreateChannelDesc(8 * sizeof(float), 0, 0, 0, cudaChannelFormatKindFloat);
     cudaMallocArray(&dImage, &channelDesc, width, height);
     cudaMemcpyToArray(dImage, 0, 0, image, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dFilter, filter, filtersize, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_filter, filter, filtersize, cudaMemcpyHostToDevice);
     tex.addressMode[0] = cudaAddressModeBorder;
     tex.addressMode[1] = cudaAddressModeBorder;
     tex.filterMode = cudaFilterModeLinear;
@@ -343,83 +349,85 @@ void TextureGPU(const char *exe, float *filter) {
     sdkCreateTimer(&timer);
     sdkStartTimer(&timer);
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    convolutionTextureGPU<<<dimGrid, dimBlock, 0>>>(dResult, dFilter, width, height, dht, dwd);
+    convolutionTextureGPU<<<dimGrid, dimBlock, 0>>>(d_result, d_filter, width, height, dht, dwd);
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
     float KernelTime = sdkGetTimerValue(&timer);
-    printf("Processing time for Texture: %f (ms)\n", sdkGetTimerValue(&timer));
-    printf("%.2f GLOPS\n",
+    fprintf(OUT,"Processing time for Texture: %f (ms)\n", sdkGetTimerValue(&timer));
+    fprintf(OUT,"%.2f GLOPS\n",
            (width * height * wd * ht * 2) / (sdkGetTimerValue(&timer) / 1000.0f) / 1e9);
     sdkDeleteTimer(&timer);
-    cudaMemcpy(output, dResult, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(output, d_result, size, cudaMemcpyDeviceToHost);
     char outputFilename[1024];
     strcpy(outputFilename, imagepath);
-    strcpy(outputFilename + strlen(imagepath) - 4, "_texture_out.pgm");
+    strcpy(outputFilename + strlen(imagepath) - 4, "_texture.pgm");
     sdkSavePGM(outputFilename, output, width, height);
-    printf("Wrote '%s'\n", outputFilename);
+    fprintf(OUT,"Results for texture memory \n");
     cudaFree(dImage);
-    cudaFree(dFilter);
-    cudaFree(dResult);
+    cudaFree(d_filter);
+    cudaFree(d_result);
     cudaDeviceSynchronize();
     sdkStopTimer(&Otimer);
-    printf("Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
+    fprintf(OUT,"Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
     sdkDeleteTimer(&Otimer);
-    printf("Reached End of Texture\n\n");
+    fprintf(OUT,"Reached End of Texture\n\n");
 }
 
 
-void NaiveGPU(const char *exe, float *filter) {
+void naive_gpu(const char *exe, float *filter) {
 
     cudaDeviceSynchronize();
-    StopWatchInterface *Otimer = nullptr;
-    sdkCreateTimer(&Otimer);
-    sdkStartTimer(&Otimer);
+    StopWatchInterface *swtime = nullptr;
+    sdkCreateTimer(&swtime);
+    sdkStartTimer(&swtime);
     float *image = nullptr;
     char *imagepath = nullptr;
     unsigned int width, height;
-    tie(image, imagepath, height, width) = loadImage(fname, exe);
+    tie(image, imagepath, height, width) = getPicture(fname, exe);
     float output[width * height];
-    unsigned int size = width * height * sizeof(float);
+    unsigned int imsize = width * height * sizeof(float);
     unsigned int filtersize = wd * ht * sizeof(float);
-    float *dFilter = nullptr;
-    float *dImage = nullptr;
-    float *dResult = nullptr;
-    cudaMalloc((void **) &dImage, size);
-    cudaMalloc((void **) &dResult, size);
-    cudaMalloc((void **) &dFilter, filtersize);
-    cudaMemcpy(dImage, image, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dFilter, filter, filtersize, cudaMemcpyHostToDevice);
+    float *d_filter = nullptr;
+    float *d_image = nullptr;
+    float *d_result = nullptr;
+    cudaMalloc((void **) &d_image, imsize);
+    cudaMalloc((void **) &d_result, imsize);
+    cudaMalloc((void **) &d_filter, filtersize);
+    cudaMemcpy(d_image, image, imsize, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_filter, filter, filtersize, cudaMemcpyHostToDevice);
     cudaDeviceSynchronize();
     StopWatchInterface *timer = nullptr;
     sdkCreateTimer(&timer);
     sdkStartTimer(&timer);
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    convolutionNaiveGPU<<<height, width>>>(dImage, dResult, dFilter, height, width, dht,dwd);
+    convolutionNaiveGPU<<<height, width>>>(d_image, d_result, d_filter, height, width, dht, dwd);
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
     float KernelTime = sdkGetTimerValue(&timer);
-    printf("Processing time for Naive: %f (ms)\n", sdkGetTimerValue(&timer));
-    printf("%.2f GLOPS\n",
+    fprintf(OUT,"Processing time for Naive: %f (ms)\n", sdkGetTimerValue(&timer));
+    fprintf(OUT,"%.2f GLOPS\n",
            (width * height * wd * ht * 2) / (sdkGetTimerValue(&timer) / 1000.0f) / 1e9);
     sdkDeleteTimer(&timer);
     cudaDeviceSynchronize();
-    cudaMemcpy(output, dResult, size, cudaMemcpyDeviceToHost);
-    char outputFilenameNaive[1024];
-    strcpy(outputFilenameNaive, imagepath);
-    strcpy(outputFilenameNaive + strlen(imagepath) - 4, "_naive_out.pgm");
-    sdkSavePGM(outputFilenameNaive, output, width, height);
-    printf("Wrote '%s'\n", outputFilenameNaive);
-    cudaFree(dImage);
-    cudaFree(dFilter);
-    cudaFree(dResult);
+    cudaMemcpy(output, d_result, imsize, cudaMemcpyDeviceToHost);
+    char output_naive[1024];
+    strcpy(output_naive, imagepath);
+    strcpy(output_naive + strlen(imagepath) - 4, "_naive.pgm");
+    sdkSavePGM(output_naive, output, width, height);
+    fprintf(OUT, "Results for naive method\n");
+    cudaFree(d_image);
+    cudaFree(d_filter);
+    cudaFree(d_result);
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
-    printf("Overhead: %f (ms)\n", sdkGetTimerValue(&Otimer) - KernelTime);
-    sdkDeleteTimer(&Otimer);
+    fprintf(OUT,"Overhead: %f (ms)\n", sdkGetTimerValue(&swtime) - KernelTime);
+    sdkDeleteTimer(&swtime);
+    fprintf(OUT,"\n");
+
 }
-void CPU(const char *exe, float *filter) {
+void cpu_conv(const char *exe, float *filter) {
     cudaDeviceSynchronize();
     StopWatchInterface *timer = nullptr;
     sdkCreateTimer(&timer);
@@ -427,7 +435,7 @@ void CPU(const char *exe, float *filter) {
     float *image = nullptr;
     char *imagepath = nullptr;
     unsigned int width, height;
-    tie(image, imagepath, height, width) = loadImage(fname, exe);
+    tie(image, imagepath, height, width) = getPicture(fname, exe);
     float outputCPU[width * height];
     cudaDeviceSynchronize();
     StopWatchInterface *timerCPU = nullptr;
@@ -439,43 +447,56 @@ void CPU(const char *exe, float *filter) {
     cudaDeviceSynchronize();
     sdkStopTimer(&timerCPU);
     float KernelTime = sdkGetTimerValue(&timerCPU);
-    printf("Processing time for CPU: %f (ms)\n", sdkGetTimerValue(&timerCPU));
-    printf("%.2f GLOPS\n",
+    fprintf(OUT,"Processing time for CPU: %f (ms)\n", sdkGetTimerValue(&timerCPU));
+    fprintf(OUT,"%.2f GLOPS\n",
            (float) (width * height * ht * wd * 2) / (sdkGetTimerValue(&timerCPU) / 1000.0f) / 1e9);
     sdkDeleteTimer(&timerCPU);
-    char outputFilename[1024];
-    strcpy(outputFilename, imagepath);
-    strcpy(outputFilename + strlen(imagepath) - 4, "_out.pgm");
-    sdkSavePGM(outputFilename, outputCPU, width, height);
-    printf("Wrote '%s'\n", outputFilename);
+    char outfile[1024];
+    strcpy(outfile, imagepath);
+    strcpy(outfile + strlen(imagepath) - 4, "_cpu.pgm");
+    sdkSavePGM(outfile, outputCPU, width, height);
+    fprintf(OUT,"Results for CPU");
     cudaDeviceSynchronize();
     sdkStopTimer(&timer);
-    printf("Overhead: %f (ms)\n", sdkGetTimerValue(&timer) - KernelTime);
+    fprintf(OUT,"Overhead: %f (ms)\n", sdkGetTimerValue(&timer) - KernelTime);
     sdkDeleteTimer(&timer);
+    fprintf(OUT,"\n");
+
 }
 
 
 int main(int argc, char *argv[]) {
 
-    const char *exe = argv[0];
-    fname = argv[1];
-    char filterchoice = *argv[2];
-    ht = atoi(argv[3]);
-    wd = atoi(argv[4]);
-    cout << ht << " " << wd << endl;
-    cudaMalloc((void**)&dht, sizeof(int));
-    cudaMalloc((void**)&dwd, sizeof(int));
-    cudaMemcpy(dht,&ht,sizeof(int),cudaMemcpyHostToDevice);
-    cudaMemcpy(dwd,&wd,sizeof(int),cudaMemcpyHostToDevice);
-    float filter[ht * wd];
 
-    cout << "Using " << ht << "x" << wd << " filter" << endl;
+    const char *prog = argv[0];
 
-    getFilter(filter, filterchoice);
-    CPU(exe, filter);
-    NaiveGPU(exe, filter);
-    ConstantGPU(exe, filter);
-    TextureGPU(exe, filter);
-    SharedGPU(exe, filter);
+    fname = "home-mscluster/malence/data/pipe.pgm";
+    char filters[] = {'a','e','s'};
+    for(int i = 3; i <= 9; i+=2) {
+        for(int j = 3; j <= 9; j+=2) {
+            char filterchoice = *argv[2];
+            ht = i;
+            wd = j;
+            cout << ht << " " << wd << endl;
+            cudaMalloc((void **) &dht, sizeof(int));
+            cudaMalloc((void **) &dwd, sizeof(int));
+            cudaMemcpy(dht, &ht, sizeof(int), cudaMemcpyHostToDevice);
+            cudaMemcpy(dwd, &wd, sizeof(int), cudaMemcpyHostToDevice);
+            float filter[ht * wd];
+
+            fprintf(OUT, "\n\n-------------------- %d x %d filter --------------------\n",ht,wd);
+
+            getFilter(filter, filterchoice);
+            cpu_conv(prog, filter);
+            naive_gpu(prog, filter);
+            const_gpu(prog, filter);
+            tex_gpu(prog, filter);
+            shared_gpu(prog, filter);
+            fprintf(OUT, "\n-------------------- %d x %d filter --------------------",ht,wd);
+
+            cudaFree(dht);
+            cudaFree(dwd);
+        }
+    }
     return 0;
 }
