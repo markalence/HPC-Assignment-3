@@ -3,10 +3,9 @@
 #include <cstring>
 #include <cmath>
 #include <tuple>
+#include <algorithm>
 #include <helper_functions.h>
 #include <helper_cuda.h>
-#include <ldap.h>
-
 using namespace std;
 
 int g = 0;
@@ -22,6 +21,14 @@ FILE *OUT = fopen("results.txt", "w");
 __constant__ float constfilter[MAX_SIZE];
 texture<float, 2, cudaReadModeElementType> tex;
 
+void normalize(float*arr,int len){
+    float max = *max_element(arr,arr+len);
+    float min = *min_element(arr,arr+len);
+
+    for(int i = 0; i < len; ++i){
+        arr[i] = (arr[i]-min)/(max-min);
+    }
+}
 
 void getEdgeDet(float *filter) {
     for (int i = 0; i < ht; ++i) {
@@ -97,8 +104,6 @@ __global__ void convolutionTextureGPU(float *output, float *filter, int width, i
         }
     }
 
-    if (sum < 0) sum = 0.0;
-    if (sum > 1) sum = 1.0;
     output[idxY + width * idxX] = sum;
 }
 
@@ -120,9 +125,7 @@ void convolveCPU(const float *image, float *output, const float *filter, unsigne
                 }
 
             }
-            if (sum < 0.0) sum = 0.0;
-            if (sum > 1.0) sum = 1.0;
-            output[j + i * width] = sum;
+          output[j + i * width] = sum;
         }
     }
 }
@@ -146,8 +149,6 @@ __global__ void convolutionConstantGPU(const float *image, float *output, uint h
 
             }
         }
-        if (sum < 0) sum = 0.0;
-        if (sum > 1) sum = 1.0;
         output[idx] = sum;
     }
 }
@@ -170,8 +171,6 @@ convolutionNaiveGPU(float *image, float *output, float *filter, uint height, uin
                 }
             }
         }
-        if (sum < 0) sum = 0.0;
-        if (sum > 1) sum = 1.0;
         output[idx] = sum;
     }
 }
@@ -204,8 +203,6 @@ convolutionSharedGPU(const float *image, float *output, const float *filter, uin
             }
         }
 
-        if (sum < 0) sum = 0.0;
-        if (sum > 1) sum = 1.0;
         output[idx] = sum;
     }
 }
@@ -249,6 +246,7 @@ void shared_gpu(const char *exe, float *filter) {
     string imgstr(outputfile);
     imgstr = imgstr + "_shared_" + to_string(ht) + "by" + to_string(wd) + "_" + filterchoice + ".pgm";
     strcpy(outputfile + strlen(imagepath) - 4, imgstr.c_str());
+    normalize(output,width*height);
     sdkSavePGM(outputfile, output, width, height);
     cudaFree(d_image);
     cudaFree(d_filter);
@@ -290,6 +288,7 @@ void const_gpu(const char *exe, float *filter) {
     strcpy(outputfile, imagepath);
     string imgstr = "_const_" + to_string(ht) + "by" + to_string(wd) + "_" + filterchoice + ".pgm";
     strcpy(outputfile + strlen(imagepath) - 4, imgstr.c_str());
+    normalize(output,width*height);
     sdkSavePGM(outputfile, output, width, height);
     cudaFree(d_image);
     cudaFree(d_filter);
@@ -345,6 +344,7 @@ void tex_gpu(const char *exe, float *filter) {
     strcpy(outputfile, imagepath);
     string imgstr = "_tex_" + to_string(ht) + "by" + to_string(wd) + "_" + filterchoice + ".pgm";
     strcpy(outputfile + strlen(imagepath) - 4, imgstr.c_str());
+    normalize(output,width*height);
     sdkSavePGM(outputfile, output, width, height);
     cudaFree(d_image);
     cudaFree(d_filter);
@@ -390,6 +390,7 @@ void naive_gpu(const char *exe, float *filter) {
     strcpy(outputfile, imagepath);
     string imgstr = "_naive_" + to_string(ht) + "by" + to_string(wd) + "_" + filterchoice + ".pgm";
     strcpy(outputfile + strlen(imagepath) - 4, imgstr.c_str());
+    normalize(output,width*height);
     sdkSavePGM(outputfile, output, width, height);
     cudaFree(d_image);
     cudaFree(d_filter);
@@ -423,6 +424,7 @@ void cpu_conv(const char *exe, float *filter) {
     strcpy(outputfile, imagepath);
     string imgstr = "_cpu_" + to_string(ht) + "by" + to_string(wd) + "_" + filterchoice + ".pgm";
     strcpy(outputfile + strlen(imagepath) - 4, imgstr.c_str());
+    normalize(outputCPU,width*height);
     sdkSavePGM(outputfile, outputCPU, width, height);
     cudaDeviceSynchronize();
     fprintf(OUT, "\n");
